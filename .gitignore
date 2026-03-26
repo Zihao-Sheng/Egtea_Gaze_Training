@@ -1,0 +1,9 @@
+# Local datasets
+data/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Private manifests (may contain signed URLs/tokens)
+manifests/*private*.json
