@@ -1,0 +1,41 @@
+seed: 42
+device: cuda
+output_dir: outputs/augmentation_ablation/rrc_flip
+data:
+  root: data/egtea_gaze_plus
+  split_id: 1
+  train_split_name: train_internal
+  val_split_name: val_internal
+  train_split_file: data/egtea_gaze_plus/train_internal_split1.txt
+  val_split_file: data/egtea_gaze_plus/val_internal_split1.txt
+  resize_size: 224
+  crop_size: 224
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+model:
+  name: egovideo_singleclip
+  num_frames: 4
+  pretrained_checkpoint: third_party/EgoVideo-main/backbone/ckpt_4frames.pth
+  freeze_mode: frozen
+  trainable_blocks: 4
+  classifier_dropout: 0.3
+training:
+  epochs: 3
+  batch_size: 2
+  num_workers: 0
+  learning_rate: 0.0001
+  weight_decay: 0.00005
+  amp: true
+  auto_scale_batch_size: false
+  save_epoch_snapshots: false
+augmentation:
+  name: rrc_flip
+  train:
+    random_crop: false
+    horizontal_flip_prob: 0.5
+    random_resized_crop:
+      enabled: true
+      scale: [0.8, 1.0]
+      ratio: [0.9, 1.1]
+    color_jitter:
+      enabled: false

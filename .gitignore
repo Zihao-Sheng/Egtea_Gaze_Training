@@ -1,9 +1,66 @@
-# Local datasets
-data/
+# -----------------------------------------------------------------------------
+# Minimal reproducible repo policy
+# Keep source code / configs / docs only.
+# Ignore downloaded data, pretrained assets, generated outputs, caches, logs,
+# local experiment artifacts, and editor/system junk.
+# -----------------------------------------------------------------------------
 
-# Python cache
+# Data and downloaded assets
+data/
+third_party/
+manifests/
+.torch_cache/
+
+# Generated outputs / experiment artifacts
+outputs/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.npz
+*.npy
+*.joblib
+
+# Logs / summaries / local reports
+*.log
+*.out
+*.err
+wandb/
+
+# Python cache / build artifacts
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Virtual envs / local Python installs
+.venv/
+venv/
+env/
+
+# Notebook / local IDE state
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temp / partial downloads
+*.part
+*.tmp
+*.temp
 
 # Private manifests (may contain signed URLs/tokens)
 manifests/*private*.json

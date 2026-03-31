@@ -21,12 +21,11 @@ from datasets.egtea_dataset import (
 from models.build_model import build_model
 from models.state_classifier import StateClassifier
 from models.transition_aware_reranker import LearnedTransitionAwareReranker
-from scripts.eval_transition_reranker import compute_transition_scores
-from scripts.train import NUM_CLASSES
 
 
 DATA_ROOT = ROOT / "data" / "egtea_gaze_plus"
 DEFAULT_CONFIG = ROOT / "configs" / "augmentation_ablation" / "rrc_flip.yaml"
+NUM_CLASSES = 106
 
 DEMO_ROOT = ROOT / "outputs" / "demo_ready" / "default_pipeline"
 ACTION_RUN_DIR = DEMO_ROOT / "action_encoder"
@@ -132,6 +131,34 @@ def preprocess_clip(video_path: Path, config: dict) -> torch.Tensor:
     )
     video = normalize_video(video, list(config["data"]["mean"]), list(config["data"]["std"]))
     return video.unsqueeze(0)
+
+
+def compute_transition_scores(
+    prior_log_probs: torch.Tensor,
+    prev_action_ids: torch.Tensor,
+    prev_action_mask: torch.Tensor,
+    candidate_ids: torch.Tensor,
+    prev_mode: str,
+) -> torch.Tensor:
+    batch_size, candidate_k = candidate_ids.shape
+    scores = torch.zeros((batch_size, candidate_k), device=candidate_ids.device, dtype=torch.float32)
+    if prev_mode == "prev1":
+        prev_ids = prev_action_ids[:, -1]
+        valid = prev_action_mask[:, -1]
+        if valid.any():
+            scores[valid] = prior_log_probs[prev_ids[valid]].gather(1, candidate_ids[valid])
+        return scores
+
+    valid_counts = prev_action_mask.sum(dim=1)
+    for batch_index in range(batch_size):
+        count = int(valid_counts[batch_index].item())
+        if count <= 0:
+            continue
+        use_count = min(3, count)
+        ids = prev_action_ids[batch_index, -use_count:]
+        gathered = prior_log_probs[ids].gather(1, candidate_ids[batch_index].unsqueeze(0).expand(use_count, -1))
+        scores[batch_index] = gathered.mean(dim=0)
+    return scores
 
 
 def load_action_model(device: torch.device, bundle: dict | None = None):

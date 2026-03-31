@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
+import csv
 import subprocess
 import sys
 from pathlib import Path
@@ -12,23 +14,90 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts._demo_ready_common import (
-    ACTION_RUN_DIR,
-    BUNDLE_PATH,
-    CANDIDATE_DUMP_DIR,
-    DEFAULT_CONFIG,
-    DEMO_ROOT,
-    STATE_ACTION_DIR,
-    STATE_MODEL_DIR,
-    STATE_PRED_DIR,
-    TRANSITION_PRIOR_DIR,
-    TRANSITION_RUN_DIR,
-    write_bundle,
-)
+STATE_MAPPING_PATH = ROOT / "outputs" / "state_model" / "action_to_state.json"
+DEFAULT_CONFIG = ROOT / "configs" / "augmentation_ablation" / "rrc_flip.yaml"
+DEMO_ROOT = ROOT / "outputs" / "demo_ready" / "default_pipeline"
+BUNDLE_PATH = DEMO_ROOT / "bundle.json"
 
 
-def run_step(command: list[str], done_path: Path | None = None) -> None:
-    if done_path is not None and done_path.exists():
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the default demo-ready EGTEA training pipeline.")
+    parser.add_argument("--device", type=str, default=None, help="Override device, e.g. cuda or cpu.")
+    parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="Run a minimal end-to-end sanity check with tiny training splits and 1 epoch.",
+    )
+    parser.add_argument(
+        "--force-rebuild",
+        action="store_true",
+        help="Ignore existing outputs and rerun all steps that this script launches.",
+    )
+    return parser.parse_args()
+
+
+def ensure_state_mapping() -> None:
+    if STATE_MAPPING_PATH.exists():
+        return
+    annotations_path = ROOT / "data" / "egtea_gaze_plus" / "raw_annotations" / "cls_label_index.csv"
+    state_names = [
+        "access_open",
+        "acquire_take",
+        "manipulate_process",
+        "transfer_place_move",
+        "close_finish",
+        "other_misc",
+    ]
+    action_to_state: dict[str, dict] = {}
+    with annotations_path.open("r", encoding="utf-8") as handle:
+        reader = csv.reader(handle, delimiter=";")
+        for row in reader:
+            if not row:
+                continue
+            first = row[0].strip()
+            if not first or first.startswith("#"):
+                continue
+            action_id = int(first)
+            action_label = row[1].strip()
+            verb = row[2].strip().lower()
+            noun = row[3].strip().lower()
+            if verb in {"open", "turn on"}:
+                state_name = "access_open"
+            elif verb == "take":
+                state_name = "acquire_take"
+            elif verb in {"close", "turn off"}:
+                state_name = "close_finish"
+            elif verb in {"put", "move around"}:
+                state_name = "transfer_place_move"
+            elif verb in {"cut", "mix", "divide/pull apart", "crack", "wash", "spread", "pour", "squeeze", "compress", "clean/wipe", "operate"}:
+                state_name = "manipulate_process"
+            else:
+                state_name = "other_misc"
+            action_to_state[str(action_id)] = {
+                "action_id": action_id,
+                "action_label": action_label,
+                "verb_label": verb,
+                "noun_label": noun,
+                "state_id": state_names.index(state_name),
+                "state_name": state_name,
+            }
+    STATE_MAPPING_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATE_MAPPING_PATH.write_text(
+        json.dumps(
+            {
+                "taxonomy_version": "v1",
+                "state_names": state_names,
+                "num_states": len(state_names),
+                "action_to_state": action_to_state,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def run_step(command: list[str], done_path: Path | None = None, force: bool = False) -> None:
+    if (not force) and done_path is not None and done_path.exists():
         print(f"[skip] {done_path}")
         return
     print("[run]", " ".join(command))
@@ -36,30 +105,38 @@ def run_step(command: list[str], done_path: Path | None = None) -> None:
 
 
 def main() -> int:
+    args = parse_args()
     DEMO_ROOT.mkdir(parents=True, exist_ok=True)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    train_output_dir = DEMO_ROOT / ("action_encoder_smoke" if args.smoke_test else "action_encoder")
+    candidate_dump_dir = DEMO_ROOT / ("candidate_dumps_smoke" if args.smoke_test else "candidate_dumps")
+    state_model_dir = DEMO_ROOT / "state_model" / ("state_single_mlp_h3_smoke" if args.smoke_test else "state_single_mlp_h3")
+    state_pred_dir = DEMO_ROOT / ("state_predictions_smoke" if args.smoke_test else "state_predictions")
+    transition_prior_dir = DEMO_ROOT / ("transition_priors_smoke" if args.smoke_test else "transition_priors")
+    transition_run_dir = DEMO_ROOT / "transition_reranker" / ("top10_h3_prev3_smoke" if args.smoke_test else "top10_h3_prev3")
 
-    run_step([sys.executable, str(ROOT / "scripts" / "setup_dataset.py")])
-    run_step([sys.executable, str(ROOT / "scripts" / "setup_egovideo.py")])
-    run_step(
-        [sys.executable, str(ROOT / "scripts" / "build_state_mapping.py"), "--taxonomy-version", "v1"],
-        done_path=ROOT / "outputs" / "state_model" / "action_to_state.json",
-    )
+    run_step([sys.executable, str(ROOT / "scripts" / "setup_dataset.py")], force=args.force_rebuild)
+    run_step([sys.executable, str(ROOT / "scripts" / "setup_egovideo.py")], force=args.force_rebuild)
+    ensure_state_mapping()
 
+    train_command = [
+        sys.executable,
+        str(ROOT / "scripts" / "train_with_augmentation.py"),
+        "--config",
+        str(DEFAULT_CONFIG),
+        "--output-dir",
+        str(train_output_dir),
+        "--device",
+        device,
+    ]
+    if args.smoke_test:
+        train_command.extend(["--smoke-test"])
+    else:
+        train_command.extend(["--epochs", "5"])
     run_step(
-        [
-            sys.executable,
-            str(ROOT / "scripts" / "train_with_augmentation.py"),
-            "--config",
-            str(DEFAULT_CONFIG),
-            "--output-dir",
-            str(ACTION_RUN_DIR),
-            "--epochs",
-            "5",
-            "--device",
-            device,
-        ],
-        done_path=ACTION_RUN_DIR / "best.pt",
+        train_command,
+        done_path=train_output_dir / "best.pt",
+        force=args.force_rebuild,
     )
 
     run_step(
@@ -67,7 +144,7 @@ def main() -> int:
             sys.executable,
             str(ROOT / "scripts" / "dump_topk_candidates.py"),
             "--checkpoint",
-            str(ACTION_RUN_DIR / "best.pt"),
+            str(train_output_dir / "best.pt"),
             "--device",
             device,
             "--batch-size",
@@ -81,9 +158,10 @@ def main() -> int:
             "val_internal",
             "test",
             "--output-dir",
-            str(CANDIDATE_DUMP_DIR),
+            str(candidate_dump_dir),
         ],
-        done_path=CANDIDATE_DUMP_DIR / "test.pt",
+        done_path=candidate_dump_dir / "test.pt",
+        force=args.force_rebuild,
     )
 
     run_step(
@@ -91,7 +169,7 @@ def main() -> int:
             sys.executable,
             str(ROOT / "scripts" / "train_state_model.py"),
             "--dump-dir",
-            str(CANDIDATE_DUMP_DIR),
+            str(candidate_dump_dir),
             "--taxonomy-version",
             "v1",
             "--train-split",
@@ -105,7 +183,7 @@ def main() -> int:
             "--history-len",
             "3",
             "--output-dir",
-            str(STATE_MODEL_DIR),
+            str(state_model_dir),
             "--device",
             device,
             "--batch-size",
@@ -113,7 +191,8 @@ def main() -> int:
             "--num-workers",
             "0",
         ],
-        done_path=STATE_MODEL_DIR / "best.pth",
+        done_path=state_model_dir / "best.pth",
+        force=args.force_rebuild,
     )
 
     run_step(
@@ -121,17 +200,18 @@ def main() -> int:
             sys.executable,
             str(ROOT / "scripts" / "dump_state_predictions.py"),
             "--dump-dir",
-            str(CANDIDATE_DUMP_DIR),
+            str(candidate_dump_dir),
             "--taxonomy-version",
             "v1",
             "--checkpoint",
-            str(STATE_MODEL_DIR / "best.pth"),
+            str(state_model_dir / "best.pth"),
             "--output-dir",
-            str(STATE_PRED_DIR),
+            str(state_pred_dir),
             "--device",
             device,
         ],
-        done_path=STATE_PRED_DIR / "test.pt",
+        done_path=state_pred_dir / "test.pt",
+        force=args.force_rebuild,
     )
 
     run_step(
@@ -139,15 +219,16 @@ def main() -> int:
             sys.executable,
             str(ROOT / "scripts" / "build_transition_priors.py"),
             "--dump-dir",
-            str(CANDIDATE_DUMP_DIR),
+            str(candidate_dump_dir),
             "--split",
             "train_internal",
             "--output-dir",
-            str(TRANSITION_PRIOR_DIR),
+            str(transition_prior_dir),
             "--smoothing",
             "1.0",
         ],
-        done_path=TRANSITION_PRIOR_DIR / "train_internal_transition_priors.pt",
+        done_path=transition_prior_dir / "train_internal_transition_priors.pt",
+        force=args.force_rebuild,
     )
 
     run_step(
@@ -155,11 +236,11 @@ def main() -> int:
             sys.executable,
             str(ROOT / "scripts" / "train_transition_reranker.py"),
             "--dump-dir",
-            str(CANDIDATE_DUMP_DIR),
+            str(candidate_dump_dir),
             "--prior-path",
-            str(TRANSITION_PRIOR_DIR / "train_internal_transition_priors.pt"),
+            str(transition_prior_dir / "train_internal_transition_priors.pt"),
             "--output-dir",
-            str(TRANSITION_RUN_DIR),
+            str(transition_run_dir),
             "--train-split",
             "train_internal",
             "--val-split",
@@ -185,92 +266,34 @@ def main() -> int:
             "--device",
             device,
         ],
-        done_path=TRANSITION_RUN_DIR / "best.pth",
+        done_path=transition_run_dir / "best.pth",
+        force=args.force_rebuild,
     )
 
-    run_step(
-        [
-            sys.executable,
-            str(ROOT / "scripts" / "eval_state_constrained_reranker.py"),
-            "--dump-dir",
-            str(CANDIDATE_DUMP_DIR),
-            "--state-pred-dir",
-            str(STATE_PRED_DIR),
-            "--mapping-path",
-            str(ROOT / "outputs" / "state_model" / "action_to_state.json"),
-            "--prior-path",
-            str(TRANSITION_PRIOR_DIR / "train_internal_transition_priors.pt"),
-            "--split",
-            "val_internal",
-            "--candidate-k",
-            "10",
-            "--history-len",
-            "3",
-            "--prev-mode",
-            "prev3",
-            "--state-mode",
-            "soft",
-            "--lambda-state",
-            "0.5",
-            "--transition-checkpoint",
-            str(TRANSITION_RUN_DIR / "best.pth"),
-            "--batch-size",
-            "128",
-            "--num-workers",
-            "0",
-            "--device",
-            device,
-            "--output-json",
-            str(STATE_ACTION_DIR / "metrics_val.json"),
-        ],
-        done_path=STATE_ACTION_DIR / "metrics_val.json",
-    )
-
-    run_step(
-        [
-            sys.executable,
-            str(ROOT / "scripts" / "eval_state_constrained_reranker.py"),
-            "--dump-dir",
-            str(CANDIDATE_DUMP_DIR),
-            "--state-pred-dir",
-            str(STATE_PRED_DIR),
-            "--mapping-path",
-            str(ROOT / "outputs" / "state_model" / "action_to_state.json"),
-            "--prior-path",
-            str(TRANSITION_PRIOR_DIR / "train_internal_transition_priors.pt"),
-            "--split",
-            "test",
-            "--candidate-k",
-            "10",
-            "--history-len",
-            "3",
-            "--prev-mode",
-            "prev3",
-            "--state-mode",
-            "soft",
-            "--lambda-state",
-            "0.5",
-            "--transition-checkpoint",
-            str(TRANSITION_RUN_DIR / "best.pth"),
-            "--batch-size",
-            "128",
-            "--num-workers",
-            "0",
-            "--device",
-            device,
-            "--output-json",
-            str(STATE_ACTION_DIR / "metrics_test.json"),
-        ],
-        done_path=STATE_ACTION_DIR / "metrics_test.json",
-    )
-
-    write_bundle()
+    bundle_payload = {
+        "name": "egtea_demo_ready_default_pipeline_smoke" if args.smoke_test else "egtea_demo_ready_default_pipeline",
+        "description": "Smoke-check bundle" if args.smoke_test else "RRC+Flip EgoVideo encoder + transition reranker + soft state prior",
+        "action_config": str(DEFAULT_CONFIG.relative_to(ROOT)),
+        "action_checkpoint": str((train_output_dir / "best.pt").relative_to(ROOT)),
+        "state_mapping": str((ROOT / "outputs" / "state_model" / "action_to_state.json").relative_to(ROOT)),
+        "state_checkpoint": str((state_model_dir / "best.pth").relative_to(ROOT)),
+        "transition_prior": str((transition_prior_dir / "train_internal_transition_priors.pt").relative_to(ROOT)),
+        "transition_checkpoint": str((transition_run_dir / "best.pth").relative_to(ROOT)),
+        "candidate_k": 10,
+        "history_len": 3,
+        "prev_mode": "prev3",
+        "lambda_state": 0.5,
+        "num_classes": 106,
+        "smoke_test": bool(args.smoke_test),
+    }
+    DEMO_ROOT.mkdir(parents=True, exist_ok=True)
+    BUNDLE_PATH.write_text(json.dumps(bundle_payload, indent=2), encoding="utf-8")
     summary = {
         "bundle": str(BUNDLE_PATH.relative_to(ROOT)),
-        "action_checkpoint": str((ACTION_RUN_DIR / "best.pt").relative_to(ROOT)),
-        "state_checkpoint": str((STATE_MODEL_DIR / "best.pth").relative_to(ROOT)),
-        "transition_checkpoint": str((TRANSITION_RUN_DIR / "best.pth").relative_to(ROOT)),
-        "final_test_metrics": str((STATE_ACTION_DIR / "metrics_test.json").relative_to(ROOT)),
+        "smoke_test": bool(args.smoke_test),
+        "action_checkpoint": str((train_output_dir / "best.pt").relative_to(ROOT)),
+        "state_checkpoint": str((state_model_dir / "best.pth").relative_to(ROOT)),
+        "transition_checkpoint": str((transition_run_dir / "best.pth").relative_to(ROOT)),
     }
     (DEMO_ROOT / "run_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))

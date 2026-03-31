@@ -1,6 +1,62 @@
 # EGTEA Gaze+ Training Status
 
+## Quick Start
+
+The repository is set up so teammates can reproduce the current default demo-ready pipeline with a few commands.
+
+1. Prepare the EGTEA Gaze+ dataset:
+
+```powershell
+python scripts/setup_dataset.py
+```
+
+2. Prepare EgoVideo code and checkpoint:
+
+```powershell
+python scripts/setup_egovideo.py
+```
+
+3. Run the default strongest pipeline:
+
+```powershell
+python scripts/run_default_training.py
+```
+
+4. For a fast end-to-end sanity check before full training:
+
+```powershell
+python scripts/run_default_training.py --smoke-test --force-rebuild
+```
+
+5. Predict one clip:
+
+```powershell
+python scripts/predict_single_clip.py OP03-R06-GreekSalad-331160-332380-F007944-F007981.mp4
+```
+
+6. Predict one session folder:
+
+```powershell
+python scripts/predict_clip_folder.py OP03-R06-GreekSalad
+```
+
+Default demo outputs are written to:
+
+- `outputs/demo_ready/default_pipeline/`
+
+The training/inference bundle lives at:
+
+- `outputs/demo_ready/default_pipeline/bundle.json`
+
+For the simplified teammate-facing commands, see:
+
+- `scripts/SIMPLE_RUNS.md`
+
 ## 1. Current Main Route
+
+Note:
+- The detailed sections below include older historical route notes from earlier stages of the project.
+- The current teammate-facing reproducible entrypoint is the Quick Start above.
 
 This repository currently follows a practical two-stage route for EGTEA Gaze+ RGB-only action recognition and online workflow monitoring:
 
