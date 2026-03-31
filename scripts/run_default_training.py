@@ -33,6 +33,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Ignore existing outputs and rerun all steps that this script launches.",
     )
+    parser.add_argument(
+        "--quick-train",
+        action="store_true",
+        help="Run the full pipeline but train the single-clip encoder for only 1 epoch.",
+    )
+    parser.add_argument(
+        "--train-epochs",
+        type=int,
+        default=None,
+        help="Override single-clip training epochs for the default pipeline.",
+    )
     return parser.parse_args()
 
 
@@ -108,12 +119,31 @@ def main() -> int:
     args = parse_args()
     DEMO_ROOT.mkdir(parents=True, exist_ok=True)
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    train_output_dir = DEMO_ROOT / ("action_encoder_smoke" if args.smoke_test else "action_encoder")
-    candidate_dump_dir = DEMO_ROOT / ("candidate_dumps_smoke" if args.smoke_test else "candidate_dumps")
-    state_model_dir = DEMO_ROOT / "state_model" / ("state_single_mlp_h3_smoke" if args.smoke_test else "state_single_mlp_h3")
-    state_pred_dir = DEMO_ROOT / ("state_predictions_smoke" if args.smoke_test else "state_predictions")
-    transition_prior_dir = DEMO_ROOT / ("transition_priors_smoke" if args.smoke_test else "transition_priors")
-    transition_run_dir = DEMO_ROOT / "transition_reranker" / ("top10_h3_prev3_smoke" if args.smoke_test else "top10_h3_prev3")
+    singleclip_epochs = args.train_epochs
+    if singleclip_epochs is None:
+        if args.smoke_test:
+            singleclip_epochs = 1
+        elif args.quick_train:
+            singleclip_epochs = 1
+        else:
+            singleclip_epochs = 5
+
+    if args.smoke_test:
+        variant_name = "smoke"
+    elif args.quick_train:
+        variant_name = f"quick_e{singleclip_epochs}"
+    else:
+        variant_name = "default"
+
+    variant_root = DEMO_ROOT if variant_name == "default" else (ROOT / "outputs" / "demo_ready" / f"default_pipeline_{variant_name}")
+    bundle_path = variant_root / "bundle.json"
+
+    train_output_dir = variant_root / ("action_encoder_smoke" if args.smoke_test else "action_encoder")
+    candidate_dump_dir = variant_root / ("candidate_dumps_smoke" if args.smoke_test else "candidate_dumps")
+    state_model_dir = variant_root / "state_model" / ("state_single_mlp_h3_smoke" if args.smoke_test else "state_single_mlp_h3")
+    state_pred_dir = variant_root / ("state_predictions_smoke" if args.smoke_test else "state_predictions")
+    transition_prior_dir = variant_root / ("transition_priors_smoke" if args.smoke_test else "transition_priors")
+    transition_run_dir = variant_root / "transition_reranker" / ("top10_h3_prev3_smoke" if args.smoke_test else "top10_h3_prev3")
 
     run_step([sys.executable, str(ROOT / "scripts" / "setup_dataset.py")], force=args.force_rebuild)
     run_step([sys.executable, str(ROOT / "scripts" / "setup_egovideo.py")], force=args.force_rebuild)
@@ -132,7 +162,7 @@ def main() -> int:
     if args.smoke_test:
         train_command.extend(["--smoke-test"])
     else:
-        train_command.extend(["--epochs", "5"])
+        train_command.extend(["--epochs", str(singleclip_epochs)])
     run_step(
         train_command,
         done_path=train_output_dir / "best.pt",
@@ -271,8 +301,8 @@ def main() -> int:
     )
 
     bundle_payload = {
-        "name": "egtea_demo_ready_default_pipeline_smoke" if args.smoke_test else "egtea_demo_ready_default_pipeline",
-        "description": "Smoke-check bundle" if args.smoke_test else "RRC+Flip EgoVideo encoder + transition reranker + soft state prior",
+        "name": f"egtea_demo_ready_{variant_name}",
+        "description": "Smoke-check bundle" if args.smoke_test else f"RRC+Flip EgoVideo encoder + transition reranker + soft state prior ({singleclip_epochs} epoch single-clip)",
         "action_config": str(DEFAULT_CONFIG.relative_to(ROOT)),
         "action_checkpoint": str((train_output_dir / "best.pt").relative_to(ROOT)),
         "state_mapping": str((ROOT / "outputs" / "state_model" / "action_to_state.json").relative_to(ROOT)),
@@ -285,17 +315,21 @@ def main() -> int:
         "lambda_state": 0.5,
         "num_classes": 106,
         "smoke_test": bool(args.smoke_test),
+        "quick_train": bool(args.quick_train),
+        "singleclip_epochs": int(singleclip_epochs),
     }
-    DEMO_ROOT.mkdir(parents=True, exist_ok=True)
-    BUNDLE_PATH.write_text(json.dumps(bundle_payload, indent=2), encoding="utf-8")
+    variant_root.mkdir(parents=True, exist_ok=True)
+    bundle_path.write_text(json.dumps(bundle_payload, indent=2), encoding="utf-8")
     summary = {
-        "bundle": str(BUNDLE_PATH.relative_to(ROOT)),
+        "bundle": str(bundle_path.relative_to(ROOT)),
         "smoke_test": bool(args.smoke_test),
+        "quick_train": bool(args.quick_train),
+        "singleclip_epochs": int(singleclip_epochs),
         "action_checkpoint": str((train_output_dir / "best.pt").relative_to(ROOT)),
         "state_checkpoint": str((state_model_dir / "best.pth").relative_to(ROOT)),
         "transition_checkpoint": str((transition_run_dir / "best.pth").relative_to(ROOT)),
     }
-    (DEMO_ROOT / "run_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    (variant_root / "run_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))
     return 0
 

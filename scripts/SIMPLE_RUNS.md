@@ -20,13 +20,19 @@ python scripts/setup_egovideo.py
 python scripts/run_default_training.py
 ```
 
-4. Predict one clip:
+4. Train a 1-epoch quick version that still connects to downstream testing:
+
+```powershell
+python scripts/run_default_training.py --quick-train --force-rebuild
+```
+
+5. Predict one clip:
 
 ```powershell
 python scripts/predict_single_clip.py OP03-R06-GreekSalad-331160-332380-F007944-F007981.mp4
 ```
 
-5. Predict one session folder:
+6. Predict one session folder:
 
 ```powershell
 python scripts/predict_clip_folder.py OP03-R06-GreekSalad

@@ -121,6 +121,10 @@ def preprocess_clip(video_path: Path, config: dict) -> torch.Tensor:
     num_frames = int(config["model"]["num_frames"])
     frame_indices = sample_uniform_indices(len(decoded_frames), num_frames)
     sampled_frames = [decoded_frames[i] for i in frame_indices]
+    return preprocess_sampled_frames(sampled_frames, config)
+
+
+def preprocess_sampled_frames(sampled_frames: list[torch.Tensor], config: dict) -> torch.Tensor:
     video = torch.stack(sampled_frames, dim=0).permute(0, 3, 1, 2).float() / 255.0
     video = apply_spatial_transform(
         frames=video,
@@ -193,9 +197,17 @@ def load_transition_model(device: torch.device, bundle: dict | None = None) -> L
     return model
 
 
-def predict_action_logits(video_path: Path, device: torch.device, bundle: dict | None = None) -> dict:
-    config, model_bundle = load_action_model(device=device, bundle=bundle)
+def predict_action_logits_from_loaded(video_path: Path, device: torch.device, config: dict, model_bundle) -> dict:
     video = preprocess_clip(video_path, config).to(device)
+    return predict_action_logits_from_video(video=video, config=config, model_bundle=model_bundle)
+
+
+def predict_action_logits_from_sampled_frames(sampled_frames: list[torch.Tensor], device: torch.device, config: dict, model_bundle) -> dict:
+    video = preprocess_sampled_frames(sampled_frames, config).to(device)
+    return predict_action_logits_from_video(video=video, config=config, model_bundle=model_bundle)
+
+
+def predict_action_logits_from_video(video: torch.Tensor, config: dict, model_bundle) -> dict:
     with torch.no_grad():
         logits, embeddings = model_bundle.model.forward_with_features(model_bundle.prepare_inputs(video, config))
         probs = logits.softmax(dim=1)
@@ -206,23 +218,52 @@ def predict_action_logits(video_path: Path, device: torch.device, bundle: dict |
     }
 
 
-def rerank_sequence_predictions(
-    clip_paths: list[Path],
-    device: torch.device,
-    bundle: dict | None = None,
-) -> list[dict]:
+def predict_action_logits(video_path: Path, device: torch.device, bundle: dict | None = None) -> dict:
+    config, model_bundle = load_action_model(device=device, bundle=bundle)
+    return predict_action_logits_from_loaded(video_path=video_path, device=device, config=config, model_bundle=model_bundle)
+
+
+def load_reranker_runtime(device: torch.device, bundle: dict | None = None) -> dict:
     bundle = bundle or load_bundle()
     action_names, state_names, action_state_ids = load_action_mapping(resolve_repo_path(bundle["state_mapping"]))
     config, action_bundle = load_action_model(device=device, bundle=bundle)
     state_model = load_state_model(device=device, bundle=bundle)
     transition_model = load_transition_model(device=device, bundle=bundle)
     prior_payload = torch.load(resolve_repo_path(bundle["transition_prior"]), map_location="cpu", weights_only=False)
-    prior_log_probs = prior_payload["transition_log_probs"].float().to(device)
+    return {
+        "bundle": bundle,
+        "action_names": action_names,
+        "state_names": state_names,
+        "action_state_ids": action_state_ids,
+        "config": config,
+        "action_bundle": action_bundle,
+        "state_model": state_model,
+        "transition_model": transition_model,
+        "prior_log_probs": prior_payload["transition_log_probs"].float().to(device),
+        "history_len": int(bundle["history_len"]),
+        "candidate_k": int(bundle["candidate_k"]),
+        "lambda_state": float(bundle["lambda_state"]),
+        "prev_mode": str(bundle["prev_mode"]),
+    }
 
-    history_len = int(bundle["history_len"])
-    candidate_k = int(bundle["candidate_k"])
-    lambda_state = float(bundle["lambda_state"])
-    prev_mode = str(bundle["prev_mode"])
+
+def rerank_sequence_predictions_from_loaded(
+    clip_paths: list[Path],
+    device: torch.device,
+    runtime: dict,
+) -> list[dict]:
+    action_names = runtime["action_names"]
+    state_names = runtime["state_names"]
+    action_state_ids = runtime["action_state_ids"]
+    config = runtime["config"]
+    action_bundle = runtime["action_bundle"]
+    state_model = runtime["state_model"]
+    transition_model = runtime["transition_model"]
+    prior_log_probs = runtime["prior_log_probs"]
+    history_len = runtime["history_len"]
+    candidate_k = runtime["candidate_k"]
+    lambda_state = runtime["lambda_state"]
+    prev_mode = runtime["prev_mode"]
 
     history_embeddings: list[torch.Tensor] = []
     prev_raw_action_ids: list[int] = []
@@ -309,5 +350,13 @@ def rerank_sequence_predictions(
                     "top5": top5_pairs,
                 }
             )
-
     return rows
+
+
+def rerank_sequence_predictions(
+    clip_paths: list[Path],
+    device: torch.device,
+    bundle: dict | None = None,
+) -> list[dict]:
+    runtime = load_reranker_runtime(device=device, bundle=bundle)
+    return rerank_sequence_predictions_from_loaded(clip_paths=clip_paths, device=device, runtime=runtime)

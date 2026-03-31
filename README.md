@@ -22,19 +22,25 @@ python scripts/setup_egovideo.py
 python scripts/run_default_training.py
 ```
 
-4. For a fast end-to-end sanity check before full training:
+4. Run a 1-epoch quick version that still produces a connected testing bundle:
+
+```powershell
+python scripts/run_default_training.py --quick-train --force-rebuild
+```
+
+5. For a fast end-to-end sanity check before full training:
 
 ```powershell
 python scripts/run_default_training.py --smoke-test --force-rebuild
 ```
 
-5. Predict one clip:
+6. Predict one clip:
 
 ```powershell
 python scripts/predict_single_clip.py OP03-R06-GreekSalad-331160-332380-F007944-F007981.mp4
 ```
 
-6. Predict one session folder:
+7. Predict one session folder:
 
 ```powershell
 python scripts/predict_clip_folder.py OP03-R06-GreekSalad
@@ -51,6 +57,14 @@ The training/inference bundle lives at:
 For the simplified teammate-facing commands, see:
 
 - `scripts/SIMPLE_RUNS.md`
+
+## Practical Notes
+
+- The first call to `predict_single_clip.py` or `predict_clip_folder.py` will feel slower because the model weights and EgoVideo backbone need to be loaded first.
+- After this warm-up, the actual per-clip prediction time is much shorter than the first observed run.
+- Compared with the lighter `TSM` route we used earlier, the current EgoVideo single-clip training is roughly `2.2x` slower per epoch in our setup.
+- In exchange, the first-epoch accuracy gain is roughly `10x` larger than what we typically observed from `TSM`.
+- So although the per-epoch cost is higher, the accuracy-per-epoch tradeoff is still good enough for practical reproduction.
 
 ## 1. Current Main Route
 
