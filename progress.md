@@ -1,0 +1,1133 @@
+# Progress
+
+## 2026-03-26
+
+- Reviewed the original repository: the existing usable baseline was `scripts/train_rgb_baseline.py`, with EGTEA data already extracted under `data/egtea_gaze_plus/`.
+- Reused the existing EGTEA data layout and label protocol:
+  - `raw_annotations/action_labels.csv`
+  - `raw_annotations/cls_label_index.csv`
+  - `train_split*.txt`
+  - `test_split*.txt`
+- Added a unified RGB action-classification structure:
+  - `datasets/egtea_dataset.py`
+  - `datasets/build_egtea_splits.py`
+  - `models/build_model.py`
+  - `models/tsm_adapter.py`
+  - `models/x3d_adapter.py`
+  - `models/slowfast_adapter.py`
+  - `configs/egtea_tsm.yaml`
+  - `configs/egtea_x3ds.yaml`
+  - `configs/egtea_slowfast.yaml`
+  - `scripts/train.py`
+  - `scripts/evaluate.py`
+  - `scripts/benchmark_compare.py`
+- Planned experimental path:
+  1. TSM smoke test
+  2. X3D-S smoke test
+  3. SlowFast-R50 smoke test
+  4. Save comparable summaries under `outputs/`
+
+## Smoke Tests Completed
+
+- TSM smoke training completed with unified `scripts/train.py`.
+  - Output directory: `outputs/tsm/`
+  - Best val top-1: `12.50`
+  - Val top-5: `12.50`
+  - Train total time: `6.79s`
+  - Average epoch time: `6.06s`
+  - Peak memory: `2074.16 MB`
+  - Params: `23,725,226`
+- X3D-S smoke training completed with unified `scripts/train.py`.
+  - Output directory: `outputs/x3ds/`
+  - Best val top-1: `0.00`
+  - Val top-5: `25.00`
+  - Train total time: `3.44s`
+  - Average epoch time: `3.16s`
+  - Peak memory: `781.42 MB`
+  - Params: `3,191,868`
+- SlowFast-R50 smoke training completed with unified `scripts/train.py`.
+  - Output directory: `outputs/slowfast/`
+  - Best val top-1: `0.00`
+  - Val top-5: `12.50`
+  - Train total time: `6.61s`
+  - Average epoch time: `5.21s`
+  - Peak memory: `798.37 MB`
+  - Params: `33,888,818`
+  - Stability note: ran with `batch_size=1`, `num_frames=32`, `resize=192`, `crop=160`
+
+## Unified Evaluation Completed
+
+- TSM evaluated through `scripts/evaluate.py`.
+  - Checkpoint: `outputs/tsm/best.pt`
+  - Metrics file: `outputs/tsm/eval_test.json`
+  - Top-1: `9.99`
+  - Top-5: `13.80`
+  - Eval peak memory: `3898.04 MB`
+- X3D-S evaluated through `scripts/evaluate.py`.
+  - Checkpoint: `outputs/x3ds/best.pt`
+  - Metrics file: `outputs/x3ds/eval_test.json`
+  - Top-1: `4.40`
+  - Top-5: `12.07`
+  - Eval peak memory: `1473.75 MB`
+- SlowFast-R50 evaluated through `scripts/evaluate.py`.
+  - Checkpoint: `outputs/slowfast/best.pt`
+  - Metrics file: `outputs/slowfast/eval_test.json`
+  - Top-1: `2.08`
+  - Top-5: `8.51`
+  - Eval peak memory: `1242.89 MB`
+
+## Notes
+
+- All three models reuse the same EGTEA label mapping and split protocol.
+- These numbers are from sanity-scale fine-tuning runs, so they validate the full pipeline and relative engineering tradeoffs, but they are not converged final benchmark numbers yet.
+- `scripts/benchmark_compare.py` can be used to regenerate a markdown and CSV comparison table from the saved summaries and evaluation JSON files.
+
+## 2026-03-27
+
+- Started the causal online workflow-monitoring extension without removing any existing single-clip baseline.
+- Audited the current reusable single-clip components:
+  - Training entry: `scripts/train.py` with `configs/egtea_tsm.yaml`
+  - Dataset: `datasets/egtea_dataset.py`
+  - Label mapping: `raw_annotations/cls_label_index.csv` and `raw_annotations/action_labels.csv`
+  - Split protocol: `train_split*.txt` and `test_split*.txt`
+  - Current strongest reusable checkpoint: `outputs/tsm/best.pt`
+- Decided to reuse the trained TSM clip encoder as the offline feature extractor for the causal context model.
+- Planned new causal-context files:
+  - `datasets/egtea_sequence_manifest.py`
+  - `datasets/egtea_context_dataset.py`
+  - `models/causal_gru_head.py`
+  - `models/build_context_model.py`
+  - `scripts/build_sequence_manifest.py`
+  - `scripts/extract_clip_features.py`
+  - `scripts/train_causal_context.py`
+  - `scripts/eval_causal_context.py`
+  - `scripts/online_demo.py`
+- Session order recovery plan:
+  - Parse `clip_stem` from official split files
+  - Recover `session_id`, `start_ms`, `end_ms`, `start_frame`, `end_frame` directly from the clip name
+  - Sort clips strictly within each session by `(start_frame, end_frame, start_ms, end_ms, clip_stem)`
+  - Assign `clip_idx` after sorting
+  - Never concatenate clips across sessions
+  - Keep the existing train/test protocol; generate `val` as the same held-out split used by the current baseline so the old evaluation path remains consistent
+
+## Causal Context Pipeline Implemented
+
+- Added sequence-manifest utilities:
+  - `datasets/egtea_sequence_manifest.py`
+  - `scripts/build_sequence_manifest.py`
+- Built causal manifests under `outputs/causal_context/manifests/`
+  - `train.jsonl` / `val.jsonl` / `test.jsonl`
+  - `train.csv` / `val.csv` / `test.csv`
+  - `summary.json`
+- Manifest generation result for `split1`:
+  - train: `8299` clips, `86` sessions
+  - val: `2022` clips, `65` sessions
+  - test: `2022` clips, `65` sessions
+- The current repo still uses the official train/test split protocol, so `val` and `test` currently point to the same held-out split to preserve compatibility with the existing baseline workflow.
+
+## Clip Feature Extraction Completed
+
+- Added offline feature extraction path:
+  - `scripts/extract_clip_features.py`
+- Reused `outputs/tsm/best.pt` as the single-clip encoder checkpoint.
+- Added feature export format:
+  - per split and per session `.pt` files under `outputs/causal_context/features/`
+  - global feature index in `outputs/causal_context/features/index.json`
+- Saved both:
+  - `embedding` from the TSM classification head input
+  - `logits` from the TSM classifier output
+- Windows note:
+  - feature extraction hit a local `num_workers > 0` multiprocessing permission issue
+  - reran successfully with `num_workers=0`
+
+## Causal Dataset And Model Implemented
+
+- Added:
+  - `datasets/egtea_context_dataset.py`
+  - `models/causal_gru_head.py`
+  - `models/build_context_model.py`
+- Current causal setup:
+  - strictly causal windows `[t-K+1, ..., t]`
+  - default `K = 5`
+  - left padding by repeating the first available clip in the same session
+  - no future clip is ever used
+  - supported modes:
+    - `embedding_only`
+    - `embedding_plus_logits`
+
+## Causal Training Completed
+
+- Added:
+  - `scripts/train_causal_context.py`
+  - `scripts/eval_causal_context.py`
+  - `scripts/online_demo.py`
+- `embedding_only` run saved under `outputs/causal_context/embedding_only/`
+  - best val top-1: `55.84`
+  - val top-5: `82.29`
+  - total train time: `67.22s`
+  - avg epoch time: `3.29s`
+- `embedding_plus_logits` run saved under `outputs/causal_context/embedding_plus_logits/`
+  - best val top-1: `44.46`
+  - val top-5: `74.58`
+  - total train time: `44.34s`
+  - avg epoch time: `3.34s`
+  - early stopping triggered at epoch `13`
+
+## Held-Out Evaluation Refreshed
+
+- Re-ran the single-clip TSM held-out evaluation so `outputs/tsm/eval_test.json` now matches the full training checkpoint:
+  - top-1: `54.15`
+  - top-5: `82.94`
+- Context-model held-out results:
+  - `embedding_only`
+    - top-1: `55.84`
+    - top-5: `82.29`
+  - `embedding_plus_logits`
+    - top-1: `44.51`
+    - top-5: `74.68`
+- Comparison markdown is saved to:
+  - `outputs/causal_context/comparison.md`
+
+## Online Simulation Completed
+
+- Ran `scripts/online_demo.py` with the `embedding_only` context head.
+- Output directory:
+  - `outputs/causal_context/online_demo/embedding_only/`
+- Online summary on the held-out split:
+  - top-1: `55.84`
+  - avg extra context-model latency: `0.69 ms / clip`
+  - max observed latency: `78.97 ms`
+  - sessions simulated: `65`
+  - clips simulated: `2022`
+
+## 2026-03-27 Context Sanity Follow-Up
+
+- Audited the current causal training path before adding any new experiment knobs:
+  - training entry: `scripts/train_causal_context.py`
+  - evaluation entry: `scripts/eval_causal_context.py`
+  - model builder: `models/build_context_model.py`
+  - current output layout: `outputs/causal_context/<run_name>/`
+  - checkpoint naming: `best.pth` and `latest.pth`
+- Extended the existing context pipeline instead of duplicating it:
+  - added `models/causal_tcn_head.py`
+  - extended `scripts/train_causal_context.py` with:
+    - `--history-len` / `--K`
+    - `--context-model gru|tcn`
+    - default `input_mode=embedding_only`
+  - extended `scripts/eval_causal_context.py` so it reads the saved config and evaluates either GRU or TCN runs
+  - added `scripts/summarize_context_results.py` to build the ablation markdown/CSV summary
+- Reused the exact same:
+  - split protocol
+
+## 2026-03-27 EgoVideo Migration Audit
+
+- Audited the current local EGTEA project before introducing a new backbone:
+  - data root: `data/egtea_gaze_plus/`
+  - official labels:
+    - `raw_annotations/action_labels.csv`
+    - `raw_annotations/cls_label_index.csv`
+  - official split protocol:
+    - `train_split*.txt`
+    - `test_split*.txt`
+  - current unified single-clip training entry:
+    - `scripts/train.py`
+  - current unified evaluation entry:
+    - `scripts/evaluate.py`
+  - current strongest reusable single-clip checkpoint:
+    - `outputs/tsm/best.pt`
+- Audited the downloaded official EgoVideo repository under `third_party/EgoVideo-main/`:
+  - visual backbone code:
+    - `third_party/EgoVideo-main/backbone/model/vision_encoder.py`
+  - official multimodal setup entry:
+    - `third_party/EgoVideo-main/backbone/model/setup_model.py`
+  - feature-extraction guidance:
+    - `third_party/EgoVideo-main/backbone/readme.md`
+  - official preprocessing reference:
+    - `third_party/EgoVideo-main/backbone/eval_ek100_mir.py`
+  - pretrained checkpoint:
+    - `third_party/EgoVideo-main/backbone/ckpt_4frames.pth`
+- Migration decision:
+  - chose route **A, minimal direct fine-tune**
+  - reuse the official EgoVideo **visual** backbone and official 4-frame / 224-crop preprocessing conventions
+  - do **not** port the full text branch or wait for the missing EK-100 action-recognition training code
+  - keep the existing EGTEA dataset, split, label mapping, train loop, eval loop, and output conventions
+
+## EgoVideo Single-Clip Integration Implemented
+
+- Added a minimal EgoVideo adapter:
+  - `models/egovideo_adapter.py`
+- Extended the unified model builder:
+  - `models/build_model.py`
+- Added EgoVideo-specific command-line wrappers:
+  - `configs/egtea_egovideo_singleclip.yaml`
+  - `scripts/train_egovideo_singleclip.py`
+  - `scripts/eval_egovideo_singleclip.py`
+  - `scripts/export_egovideo_embeddings.py`
+- Added a future-facing feature export path so EgoVideo clip embeddings can later be reused by:
+  - causal GRU / TCN
+  - next-action prediction
+  - step/state modeling
+
+## EgoVideo Vendor Compatibility Fixes
+
+- Applied the smallest local patches needed to use the official visual backbone without the original text stack:
+  - `third_party/EgoVideo-main/backbone/model/vision_encoder.py`
+  - `third_party/EgoVideo-main/backbone/model/flash_attention_class.py`
+- Local fixes made:
+  - removed the unnecessary BERT import from the visual encoder path
+  - made `flash_attn` imports optional instead of failing at import time
+  - kept the standard PyTorch attention / MLP path active when fused flash-attn ops are unavailable
+- Verified the official checkpoint load path directly:
+  - visual keys `module.visual.*` load cleanly into `PretrainVisionTransformer`
+  - missing keys: `0`
+  - unexpected keys: `0`
+
+## EgoVideo Sanity Runs
+
+- `frozen-backbone` sanity run completed end-to-end:
+  - output: `outputs/egovideo_singleclip/smoke_frozen_b2/`
+  - settings:
+    - `freeze_mode=frozen`
+    - `batch_size=2`
+    - `num_frames=4`
+    - `resize=crop=224`
+    - smoke split size: train `16`, val `8`
+  - smoke result:
+    - best val top-1: `12.50`
+    - peak memory: `4418 MB`
+    - parameter count: `1,048,474,858`
+- `partial-finetune` sanity run also reached train/val successfully, confirming backward works with unfrozen EgoVideo blocks:
+  - outputs:
+    - `outputs/egovideo_singleclip/smoke_partial_b1/`
+    - `outputs/egovideo_singleclip/smoke_partial_tiny/`
+  - practical observations:
+    - automatic batch-size probing was too aggressive for this backbone on Windows/CUDA and could trigger OOM during preflight
+    - added `--disable-auto-scale` to the EgoVideo training wrapper for the heavier fine-tuning modes
+    - partial fine-tuning is much slower than the frozen-head run, so the real experiment should prioritize a carefully chosen partial-finetune schedule rather than naive full fine-tuning
+  - evaluation protocol note:
+    - the original unified training path used `test_split1.txt` as `val`, which is not clean for model selection
+    - added `scripts/build_internal_val_split.py` to build a session-disjoint internal validation split from `train_split1.txt`
+    - for cleaner EgoVideo experiments, the intended protocol is now:
+      - train on `train_internal_split1.txt`
+      - validate on `val_internal_split1.txt`
+      - evaluate on the untouched official `test_split1.txt`
+  - added a safer two-stage fine-tuning path:
+    - `--resume-model-only` allows switching from `frozen` to `partial` while only reusing model weights
+    - this avoids carrying over optimizer/scheduler state from a different freeze configuration
+  - label mapping
+  - extracted TSM feature cache
+  - optimizer and learning-rate setup
+  - early stopping logic
+- Completed the requested minimal confirmation experiments:
+  - `outputs/causal_context/gru_k3_embedding_only/`
+    - best epoch: `15`
+    - val top-1: `55.34`
+    - held-out top-1: `55.34`
+    - held-out top-5: `82.10`
+    - total train time: `47.85s`
+  - `outputs/causal_context/gru_k5_embedding_only/`
+    - best epoch: `18`
+    - val top-1: `55.84`
+    - held-out top-1: `55.84`
+    - held-out top-5: `82.29`
+    - total train time: `52.19s`
+  - `outputs/causal_context/gru_k7_embedding_only/`
+    - best epoch: `12`
+    - val top-1: `55.54`
+    - held-out top-1: `55.64`
+    - held-out top-5: `81.95`
+    - total train time: `63.12s`
+  - `outputs/causal_context/tcn_k5_embedding_only/`
+    - best epoch: `8`
+    - val top-1: `52.82`
+    - held-out top-1: `52.82`
+    - held-out top-5: `82.00`
+    - total train time: `90.63s`
+- Interpretation from the minimal confirmation pass:
+  - `K=5` remains the best GRU setting among `3/5/7`
+  - moving from `K=5` to `K=7` gives only a tiny held-out gain over `K=3`, and does not beat the best `K=5` validation result
+  - the new causal TCN did not outperform the existing causal GRU, and it was noticeably slower in this first implementation
+  - this suggests the current "use more past clips to correct the current clip label" route is showing diminishing returns under the existing offline TSM feature setup
+
+## EgoVideo Top-k Reranker
+
+- Goal for this round:
+  - stop treating context as a full `106`-way reclassifier
+  - instead, use EgoVideo frozen single-clip outputs as a strong candidate generator and only rerank the current clip's `Top-k` labels with causal past context
+- Reused existing project assets:
+  - clean EgoVideo frozen checkpoint: `outputs/egovideo_singleclip/two_stage_internal_clean/frozen_stage1/best.pt`
+  - session ordering and clip metadata from the existing sequence-manifest pipeline
+  - existing EGTEA split / label mapping / evaluation conventions
+- Added new modules:
+  - `datasets/egtea_reranker_dataset.py`
+  - `models/causal_context_encoder.py`
+  - `models/topk_reranker.py`
+  - `scripts/dump_topk_candidates.py`
+  - `scripts/train_topk_reranker.py`
+  - `scripts/eval_topk_reranker.py`
+  - `scripts/summarize_reranker_results.py`
+- Candidate dump generated for `train_internal`, `val_internal`, and `test`:
+  - output root: `outputs/reranker/candidate_dumps/`
+  - saved per clip:
+    - embedding
+    - full logits
+    - `top5` / `top10` candidate ids, scores, probabilities
+    - true label
+    - `session_id`
+    - `clip_idx`
+  - observed raw coverage from the dump:
+    - `train_internal`: top-1 `80.37`, top-5 `98.22`, top-10 `99.50`
+    - `val_internal`: top-1 `78.60`, top-5 `97.43`, top-10 `98.62`
+    - `test`: top-1 `77.10`, top-5 `96.59`, top-10 `98.62`
+- Implemented reranker training protocol:
+  - causal history length `K=5`
+  - train only on hit@k samples, so the model learns the true position within the current clip's candidate set
+  - evaluation still runs on all clips, falling back to raw top-1 when the ground-truth class is outside the current candidate set
+- Version A: score-only reranker
+  - uses past-clip embedding GRU summary + candidate id embedding + current candidate score/probability features
+  - `Top-5` run: `outputs/reranker/top5_v1_score/`
+    - val reranked top-1: `79.16`
+    - test reranked top-1: `78.04`
+    - gain vs raw test top-1: `+0.94`
+    - coverage: `96.59`
+  - `Top-10` run: `outputs/reranker/top10_v1_score/`
+    - val reranked top-1: `79.16`
+    - test reranked top-1: `78.73`
+    - gain vs raw test top-1: `+1.63`
+    - coverage: `98.62`
+- Version B: embedding-aware reranker
+  - adds the current clip embedding explicitly on top of the Version A features
+  - `Top-5` run: `outputs/reranker/top5_v2_embedding/`
+    - val reranked top-1: `79.43`
+    - test reranked top-1: `78.44`
+    - gain vs raw test top-1: `+1.34`
+    - coverage: `96.59`
+  - `Top-10` run: `outputs/reranker/top10_v2_embedding/`
+    - val reranked top-1: `79.80`
+    - test reranked top-1: `78.78`
+    - gain vs raw test top-1: `+1.68`
+    - coverage: `98.62`
+- Practical interpretation:
+  - on the stronger EgoVideo backbone, reranking does look more promising than the earlier full-label context reclassification route
+  - `embedding_aware` is consistently better than `score_only`
+  - `Top-10` is the best default candidate set so far:
+    - noticeably higher coverage than `Top-5`
+    - larger top-1 gain after reranking
+  - the best current setting is:
+    - `candidate_k=10`
+    - `context_K=5`
+    - `embedding-aware reranker`
+- Aggregated summary files:
+  - `outputs/reranker/context_reranker_summary.md`
+  - `outputs/reranker/context_reranker_summary.csv`
+
+## Transition-aware Top-k Reranker
+
+- Motivation for this stage:
+  - plain Top-k reranking helped, but only by about `+1.x` top-1
+  - the error audit showed the remaining mistakes are mostly local transition / phase confusions:
+    - `Open <-> Close`
+    - `Take <-> Put`
+    - `Take <-> Move Around`
+    - `Open fridge_drawer <-> Open fridge / Open drawer`
+    - `Divide/Pull Apart <-> Take / Put`
+  - this suggests modeling action transitions is more promising than another round of generic full-label reclassification
+- Added transition-aware components:
+  - `datasets/egtea_transition_reranker_dataset.py`
+  - `models/transition_aware_reranker.py`
+  - `scripts/build_transition_priors.py`
+  - `scripts/eval_transition_reranker.py`
+  - `scripts/train_transition_reranker.py`
+  - `scripts/summarize_transition_results.py`
+- Transition prior setup:
+  - source split: `train_internal`
+  - order: first-order action transitions only
+  - smoothing: Laplace smoothing with `alpha = 1.0`
+  - output:
+    - `outputs/transition_reranker/priors/train_internal_transition_priors.pt`
+    - `outputs/transition_reranker/priors/train_internal_transition_priors.json`
+- Version A: transition-matrix reranker
+  - formula:
+    - `score(candidate) = raw_score(candidate) + lambda * log P(candidate | prev_action)`
+  - current causal source for `prev_action`:
+    - previous raw top-1 action only (`prev1`)
+  - lambda sweep on `val_internal` for `Top-5`:
+    - best `lambda = 0.3`
+    - best val top-1: `79.43`
+  - test result:
+    - output dir: `outputs/transition_reranker/matrix_top5_prev1/`
+    - test top-1: `77.55`
+    - gain vs raw: `+0.45`
+  - interpretation:
+    - transition priors are useful, but the pure matrix-based version is weaker than the existing learned plain reranker
+- Version B: learned transition-aware reranker
+  - inputs per candidate:
+    - candidate class id embedding
+    - current raw score / probability
+    - current clip embedding
+    - causal GRU context vector
+    - previous action id embedding
+    - transition prior score
+  - current run:
+    - output dir: `outputs/transition_reranker/top5_learned_prev1/`
+    - best epoch: `3`
+    - val top-1: `79.98`
+    - test top-1: `79.43`
+    - gain vs raw test top-1: `+2.32`
+    - gain vs plain Top-5 embedding-aware reranker: about `+0.99`
+- Current comparison at `Top-5`:
+  - raw EgoVideo single-clip:
+    - test top-1: `77.10`
+  - plain Top-5 embedding-aware reranker:
+    - test top-1: `78.44`
+    - gain vs raw: `+1.34`
+  - transition-matrix Top-5 reranker:
+    - test top-1: `77.55`
+    - gain vs raw: `+0.45`
+  - learned transition-aware Top-5 reranker:
+    - test top-1: `79.43`
+    - gain vs raw: `+2.32`
+    - gain vs plain reranker: `+0.99`
+- Error-type repair summary:
+  - generated in `outputs/transition_reranker/error_fix_report.md`
+  - this report compares:
+    - raw top-1 error counts
+    - how many are fixed by the plain reranker
+    - how many are fixed by the learned transition-aware reranker
+- Aggregated transition summary:
+  - `outputs/transition_reranker/transition_summary.md`
+  - `outputs/transition_reranker/transition_summary.csv`
+
+## Transition-aware Ablations
+
+- Extended the learned transition-aware reranker so `prev3` now explicitly uses a causal summary of the last up to `3` previous raw-top1 action embeddings, instead of only changing the prior feature.
+- Added `resolved_config.json` saving for each learned transition-aware run so ablation outputs are self-contained.
+- Completed the requested `prev1 vs prev3` comparison at `candidate_k=5`, `history_len=5`:
+  - previous best baseline: `outputs/transition_reranker/top5_learned_prev1/`
+    - val top-1: `79.98`
+    - test top-1: `79.43`
+  - new `prev3` run: `outputs/transition_reranker/ablations/top5_h5_prev3/`
+    - val top-1: `80.17`
+    - test top-1: `79.43`
+  - interpretation:
+    - `prev3` is slightly better on validation
+    - test is effectively tied with `prev1`
+- Completed `history_len` ablation with `prev_mode=prev3`, `candidate_k=5`:
+  - `history_len=3`: `outputs/transition_reranker/ablations/top5_h3_prev3/`
+    - val top-1: `80.72`
+    - test top-1: `79.67`
+    - gain vs raw: `+2.57`
+  - `history_len=5`: `outputs/transition_reranker/ablations/top5_h5_prev3/`
+    - val top-1: `80.17`
+    - test top-1: `79.43`
+    - gain vs raw: `+2.32`
+  - `history_len=7`: `outputs/transition_reranker/ablations/top5_h7_prev3/`
+    - val top-1: `80.53`
+    - test top-1: `79.57`
+    - gain vs raw: `+2.47`
+  - interpretation:
+    - `history_len=3` is currently the strongest setting
+    - longer history still helps over the old baseline, but the gains are small and not monotonic
+- Completed `Top5 vs Top10` under the current best settings (`history_len=3`, `prev_mode=prev3`):
+  - `Top5`: test top-1 `79.67`, coverage `96.59`
+  - `Top10`: `outputs/transition_reranker/ablations/top10_h3_prev3/`
+    - val top-1: `80.62`
+    - test top-1: `79.72`
+    - gain vs raw: `+2.62`
+    - coverage: `98.62`
+  - interpretation:
+    - `Top10` gives the best test result so far
+    - the gain over `Top5` is real but modest (`+0.05` test top-1 over the best previous row in sequence, `+0.30` over the old `Top5 + prev1` best)
+- Regenerated summary and error-analysis artifacts:
+  - `outputs/transition_reranker/ablations/ablation_summary.md`
+  - `outputs/transition_reranker/ablations/ablation_summary.csv`
+  - updated `outputs/transition_reranker/error_fix_report.md`
+- New error-analysis takeaway from the ablations:
+  - the stronger ablation mostly adds extra repairs on `Take/Put` confusions
+  - `Open/Close` repairs are stable but no longer the main source of incremental gain
+  - `fridge_drawer / fridge / drawer` remains partially fixable, but not consistently improved by every stronger variant
+
+## State Modeling
+
+- Added an initial causal state-model branch on top of the existing EgoVideo candidate dump without changing the action or reranker pipelines.
+- New files:
+  - `scripts/build_state_mapping.py`
+  - `datasets/egtea_state_dataset.py`
+  - `models/state_classifier.py`
+  - `models/causal_state_model.py`
+  - `scripts/train_state_model.py`
+  - `scripts/eval_state_model.py`
+  - `scripts/summarize_state_results.py`
+- Built a first-pass automatic `action -> state` taxonomy from `cls_label_index.csv`.
+  - output:
+    - `outputs/state_model/action_to_state.json`
+    - `outputs/state_model/action_to_state_report.md`
+  - taxonomy:
+    - `access_open`
+    - `acquire_take`
+    - `manipulate_process`
+    - `transfer_place_move`
+    - `close_finish`
+    - `other_misc`
+  - coverage:
+    - all `106` actions mapped
+    - no unmapped labels
+- Trained two initial state baselines using the clean internal protocol and existing EgoVideo embeddings:
+  - single-clip state baseline:
+    - output dir: `outputs/state_model/state_single_mlp_h3/`
+    - best epoch: `5`
+    - val top-1: `89.07`
+    - test top-1: `87.88`
+  - causal GRU state model, `history_len=3`:
+    - output dir: `outputs/state_model/state_causal_gru_h3/`
+    - best epoch: `4`
+    - val top-1: `89.35`
+    - test top-1: `87.54`
+- Initial interpretation:
+  - the coarse state task is much easier and more stable than full 106-way action classification
+  - the automatic taxonomy appears sensible enough for a first weakly supervised step/state branch
+  - however, this first causal GRU did **not** beat the single-clip state baseline on test
+  - this suggests the current coarse taxonomy already removes much of the local ambiguity, so short-context sequence modeling may bring less gain here than it did for action reranking
+- Per-state behavior on test:
+  - strongest states:
+    - `other_misc` around `96%`
+    - `access_open` around `92-93%`
+    - `manipulate_process` around `91%`
+  - weakest state:
+    - `close_finish` around `72.5%`
+  - likely confusion hotspot:
+    - `transfer_place_move` vs neighboring manipulation/finish transitions
+- Generated summary artifacts:
+  - `outputs/state_model/state_summary.md`
+  - `outputs/state_model/state_summary.csv`
+  - confusion matrices in each run directory as `.csv`
+
+## State-Constrained Action Reranker
+
+- Added a new state-aware action reranking branch on top of the existing EgoVideo candidate dump, transition-aware reranker, and state model outputs.
+- New files:
+  - `datasets/egtea_state_action_reranker_dataset.py`
+  - `models/state_constrained_reranker.py`
+  - `scripts/dump_state_predictions.py`
+  - `scripts/train_state_constrained_reranker.py`
+  - `scripts/eval_state_constrained_reranker.py`
+  - `scripts/summarize_state_action_results.py`
+- Exported aligned state predictions without retraining the state branch:
+  - input checkpoint: `outputs/state_model/state_single_mlp_h3/best.pth`
+  - output dir: `outputs/state_action_reranker/state_predictions/`
+  - exported for:
+    - `train_internal`
+    - `val_internal`
+    - `test`
+  - each split now contains predicted state ids, state probabilities, state logits, true state labels, and `(session_id, clip_idx)` alignment keys
+- Implemented three state-constrained action reranking variants under the current best action-reranker protocol (`candidate_k=10`, `history_len=3`, `prev_mode=prev3`):
+  - `soft` state prior
+    - score = best transition-aware score + `lambda_state * log P(state_of_candidate)`
+  - `hard` state penalty
+    - subtract a fixed penalty when `candidate_state != predicted_top1_state`
+  - `learned` state-aware reranker
+    - augments the learned transition-aware reranker with:
+      - predicted state embedding
+      - candidate state embedding
+      - predicted state probability vector
+      - candidate-state probability
+      - candidate-state-match flag
+      - previous state summary
+- Validation search for the simple priors:
+  - soft prior:
+    - `lambda=0.2`: val top-1 `81.08`
+    - `lambda=0.5`: val top-1 `82.00`  <- best
+    - `lambda=1.0`: val top-1 `81.82`
+    - `lambda=1.5`: val top-1 `81.73`
+  - hard prior:
+    - penalty `0.5`: val top-1 `81.08`
+    - penalty `1.0`: val top-1 `81.45` <- best
+    - penalty `2.0`: val top-1 `81.27`
+- Test results relative to the current best transition-aware reranker (`top10_h3_prev3`, test top-1 `79.72`):
+  - soft state prior:
+    - dir: `outputs/state_action_reranker/soft_top10_h3_prev3/`
+    - test top-1: `80.66`
+    - gain vs raw: `+3.56`
+    - gain vs best transition-aware: `+0.94`
+    - corrected vs best transition-aware: `36`
+    - worsened vs best transition-aware: `17`
+  - hard state prior:
+    - dir: `outputs/state_action_reranker/hard_top10_h3_prev3/`
+    - test top-1: `80.32`
+    - gain vs raw: `+3.21`
+    - gain vs best transition-aware: `+0.59`
+    - corrected vs best transition-aware: `47`
+    - worsened vs best transition-aware: `35`
+  - learned state-aware reranker:
+    - dir: `outputs/state_action_reranker/learned_top10_h3_prev3/`
+    - best val top-1: `81.54`
+    - test top-1: `80.17`
+    - gain vs raw: `+3.07`
+    - gain vs best transition-aware: `+0.45`
+    - corrected vs best transition-aware: `41`
+    - worsened vs best transition-aware: `32`
+- Current interpretation:
+  - state priors clearly help this task; all three state-aware variants beat the current best transition-aware reranker on test
+  - however, the strongest fully verified version is currently the simplest one:
+    - `soft` state prior with `lambda=0.5`
+  - the learned state-aware reranker improves over the action-only best, but does **not** beat the soft prior on test
+  - the gains are concentrated in the same near-neighbor confusions that still remain after transition-aware reranking, especially:
+    - `Take / Put`
+    - `Divide/Pull Apart vs Take / Put`
+    - some `Open / Close`
+    - some `Take / Move Around`
+  - `Open fridge_drawer / fridge / drawer` remains difficult and is not consistently helped by state
+  - this suggests state is currently most useful as a lightweight workflow prior that rules out implausible local actions, rather than as a heavier learned fusion model
+- Generated summary artifacts:
+  - `outputs/state_action_reranker/state_action_summary.md`
+  - `outputs/state_action_reranker/state_action_summary.csv`
+  - `outputs/state_action_reranker/error_fix_report.md`
+
+## Session-Level Consistency
+
+- Added a session-level consistency layer on top of the current mainline action system:
+  - base model = best soft state-constrained reranker
+  - config:
+    - `candidate_k=10`
+    - `history_len=3`
+    - `prev_mode=prev3`
+- New files:
+  - `scripts/build_session_consistency_priors.py`
+  - `datasets/egtea_session_consistency_dataset.py`
+  - `models/session_consistency_filter.py`
+  - `scripts/eval_session_consistency.py`
+  - `scripts/train_session_consistency.py`
+  - `scripts/summarize_session_consistency_results.py`
+- Built train-only session priors from `train_internal`:
+  - output:
+    - `outputs/session_consistency/priors/train_internal_session_consistency_priors.pt`
+    - `outputs/session_consistency/priors/train_internal_session_consistency_priors.json`
+  - contents:
+    - action-to-action transition prior
+    - state-to-state transition prior
+    - smoothed first-order log-probabilities
+    - action/state run-length statistics
+  - summary:
+    - action run length mean: `1.27`
+    - state run length mean: `1.47`
+- Implemented Version A: simple online consistency filter
+  - operates strictly causally on the current best soft state-prior reranker outputs
+  - uses:
+    - recent final actions
+    - recent predicted states
+    - action transition prior
+    - state transition prior
+    - small persistence bonuses
+  - searched a few lightweight weight settings on `val_internal`
+  - best val setting:
+    - `lambda_action_transition=0.15`
+    - `lambda_state_transition=0.25`
+    - `lambda_action_persist=0.05`
+    - `lambda_state_persist=0.08`
+  - result:
+    - val top-1: `82.28` vs base soft `82.00`
+    - test top-1: `80.42` vs base soft `80.66`
+    - interpretation:
+      - slight smoothing gain on val
+      - no test top-1 gain
+      - action flip rate improved slightly on test:
+        - `0.7731 -> 0.7660`
+      - jitter rate improved slightly on test:
+        - `0.0723 -> 0.0718`
+- Implemented Version B: learned session-consistency residual
+  - uses cached causal outputs from the best soft state-prior reranker
+  - trains a lightweight GRU-based residual scorer over past action/state predictions
+  - output dir:
+    - `outputs/session_consistency/learned_top10_h3_prev3_w3/`
+  - result:
+    - val top-1: `82.09`
+    - test top-1: `80.46`
+    - still below the base soft state-prior reranker (`80.66`)
+    - did not improve smoothness on test
+- Current interpretation:
+  - session-level consistency still has value as a smoothing lens, but it is **not** currently improving accuracy over the best soft state prior reranker
+  - the simple filter is slightly better than the learned residual at reducing flip/jitter, even though both underperform the base model on test top-1
+  - this suggests the current mainline is already quite stable, and extra session smoothing mainly trades off a bit of accuracy for slightly calmer predictions
+  - at this point the session-consistency layer looks more like an optional deployment-time stabilizer than a new accuracy-driving model
+- Generated summary artifacts:
+  - `outputs/session_consistency/session_consistency_summary.md`
+  - `outputs/session_consistency/session_consistency_summary.csv`
+  - `outputs/session_consistency/error_fix_report.md`
+
+## Baseline Freeze And State Taxonomy v2
+
+- Fixed the current formal action mainline baseline without retraining:
+  - baseline alias dir:
+    - `outputs/final_baselines/best_soft_state_prior/`
+  - summary file:
+    - `outputs/final_baselines/best_soft_state_prior/baseline_summary.md`
+  - selected baseline:
+    - EgoVideo single-clip
+    - learned transition-aware reranker
+    - soft state prior
+    - `candidate_k=10`
+    - `history_len=3`
+    - `prev_mode=prev3`
+  - current mainline test top-1:
+    - `80.66`
+- Extended the state mapping pipeline to support taxonomy versions:
+  - `scripts/build_state_mapping.py`
+  - `scripts/train_state_model.py`
+  - `scripts/eval_state_model.py`
+  - `scripts/dump_state_predictions.py`
+  - `datasets/egtea_state_dataset.py`
+- Built a finer `v2` state taxonomy under:
+  - `outputs/state_model_v2/action_to_state_v2.json`
+  - `outputs/state_model_v2/action_to_state_v2_report.md`
+- v2 taxonomy design:
+  - split `access_open` into:
+    - `access_open_storage`
+    - `access_open_container`
+  - split `transfer_place_move` into:
+    - `transfer_put`
+    - `transfer_move_adjust`
+  - split `manipulate_process` into:
+    - `process_cut`
+    - `process_mix_apply`
+    - `process_separate_divide`
+  - kept:
+    - `acquire_take`
+    - `close_finish`
+    - `other_misc`
+- Coverage for `v2`:
+  - all `106` actions mapped
+  - `0` uncovered actions
+- Trained and evaluated `v2` state baselines:
+  - single-clip state baseline:
+    - output dir: `outputs/state_model_v2/state_single_mlp_h3/`
+    - best epoch: `5`
+    - val top-1: `88.43`
+    - test top-1: `88.97`
+  - causal GRU state baseline, `history_len=3`:
+    - output dir: `outputs/state_model_v2/state_causal_gru_h3/`
+    - best epoch: `4`
+    - val top-1: `87.88`
+    - test top-1: `87.24`
+- Exported aligned `v2` state predictions from the best `v2` single-clip state model:
+  - output dir:
+    - `outputs/state_action_reranker_v2/state_predictions/`
+- Re-ran the soft state-constrained reranker with the `v2` mapping on top of the same best action reranker backbone:
+  - val lambda search:
+    - `0.2 -> 80.72`
+    - `0.5 -> 81.18`
+    - `1.0 -> 81.18`
+    - `1.5 -> 80.99`
+  - selected `lambda_state=0.5` as the simpler tied-best val setting
+  - output dir:
+    - `outputs/state_action_reranker_v2/soft_top10_h3_prev3/`
+  - final test top-1:
+    - `80.27`
+- Interpretation:
+  - `v2` improves the single-clip state task itself over `v1`
+  - `v2` does **not** improve the causal state baseline over `v1`
+  - `v2` does **not** beat the current `v1` soft state-prior action reranker
+  - current best action mainline remains the `v1` soft state prior configuration
+- Generated unified `v1` vs `v2` comparison artifacts:
+  - `outputs/state_model_v2/state_v2_summary.md`
+  - `outputs/state_model_v2/state_v2_summary.csv`
+  - `outputs/state_model_v2/state_design_review.md`
+
+## Next-Action Benchmark
+
+- Added a new strictly causal next-action benchmark branch:
+  - benchmark definition:
+    - `outputs/next_action/benchmark_definition.md`
+  - dataset + manifest builder:
+    - `datasets/egtea_next_action_dataset.py`
+    - `scripts/build_next_action_manifest.py`
+  - models / training:
+    - `models/next_action_baselines.py`
+    - `models/causal_next_action_model.py`
+    - `scripts/train_next_action.py`
+    - `scripts/eval_next_action.py`
+    - `scripts/summarize_next_action_results.py`
+- Benchmark definition:
+  - input at time `t` uses only past and current information
+  - target is the next annotated clip label `y_(t+1)` inside the same session
+  - the last clip of each session is skipped
+  - no sample crosses session boundaries
+  - splits reuse the clean internal protocol:
+    - `train_internal`
+    - `val_internal`
+    - `test`
+- Built aligned next-action manifests:
+  - `outputs/next_action/manifests/train_internal_next_action.jsonl`
+  - `outputs/next_action/manifests/val_internal_next_action.jsonl`
+  - `outputs/next_action/manifests/test_next_action.jsonl`
+- Sample counts:
+  - `train_internal`: `7210 -> 7137` next-action samples
+  - `val_internal`: `1089 -> 1076` next-action samples
+  - `test`: `2022 -> 1957` next-action samples
+- Ran the required baselines:
+  - naive transition baseline:
+    - output dir: `outputs/next_action/naive_transition/`
+    - val top-1: `22.12`
+    - val top-5: `47.86`
+    - test top-1: `25.09`
+    - test top-5: `50.54`
+  - current embedding -> next-action MLP:
+    - output dir: `outputs/next_action/mlp_embedding/`
+    - val top-1: `22.68`
+    - val top-5: `48.05`
+    - test top-1: `24.89`
+    - test top-5: `51.46`
+  - causal GRU next-action, `K=3`, embeddings only:
+    - output dir: `outputs/next_action/gru_h3_embedding/`
+    - val top-1: `23.14`
+    - val top-5: `50.74`
+    - test top-1: `23.86`
+    - test top-5: `52.73`
+  - causal GRU next-action, `K=3`, embeddings + current state probabilities:
+    - output dir: `outputs/next_action/gru_h3_embedding_state/`
+    - val top-1: `22.49`
+    - val top-5: `49.26`
+    - test top-1: `25.04`
+    - test top-5: `53.45`
+- Interpretation:
+  - next-action prediction is much harder than current-action reranking on the current benchmark
+  - the strongest current baseline is still the simple transition prior:
+    - test top-1 `25.09`
+  - embeddings alone do not clearly outperform the transition baseline
+  - adding state helps a little over embeddings-only GRU on test:
+    - `23.86 -> 25.04`
+  - but the gain is still not enough to beat the naive transition baseline
+- Generated artifacts:
+  - `outputs/next_action/next_action_summary.md`
+  - `outputs/next_action/next_action_summary.csv`
+  - `outputs/next_action/error_analysis.md`
+
+## State-Conditioned Next-Action
+
+- Added a new state-conditioned next-action branch:
+  - task definition:
+    - `outputs/next_action_state_conditioned/state_conditioned_definition.md`
+  - models:
+    - `models/state_conditioned_next_action.py`
+    - `models/next_state_model.py`
+  - training / evaluation:
+    - `scripts/train_state_conditioned_next_action.py`
+    - `scripts/eval_state_conditioned_next_action.py`
+    - `scripts/train_next_state.py`
+    - `scripts/eval_next_state.py`
+    - `scripts/summarize_state_conditioned_next_action.py`
+- Version A: current-state conditioned next-action
+  - output dir:
+    - `outputs/next_action_state_conditioned/current_state_h3/`
+  - validation:
+    - top-1 `22.30`
+    - top-5 `50.46`
+  - test:
+    - top-1 `23.35`
+    - top-5 `50.59`
+- Version B: two-stage next-state -> next-action
+  - intermediate next-state model:
+    - output dir:
+      - `outputs/next_action_state_conditioned/next_state_h3_model/`
+    - validation top-1:
+      - `38.75`
+    - test top-1:
+      - `40.37`
+    - test top-5:
+      - `96.47`
+  - downstream next-action model:
+    - output dir:
+      - `outputs/next_action_state_conditioned/next_state_h3/`
+    - validation:
+      - top-1 `22.21`
+      - top-5 `46.93`
+    - test:
+      - top-1 `24.27`
+      - top-5 `49.51`
+- Unified comparison:
+  - `outputs/next_action_state_conditioned/state_conditioned_summary.md`
+  - `outputs/next_action_state_conditioned/state_conditioned_summary.csv`
+- Error analysis:
+  - `outputs/next_action_state_conditioned/error_analysis.md`
+  - `outputs/next_action_state_conditioned/next_state_summary.md`
+- Interpretation:
+  - neither state-conditioned variant beats the existing naive transition baseline
+  - `current_state` conditioning is weaker than the direct GRU + state concat baseline
+  - `next_state` conditioning is directionally better than `current_state`, especially on:
+    - `Take -> Put/Move`
+    - `Process -> Put`
+  - but the overall next-action top-1 remains below the current naive transition lower bound
+  - this suggests the next useful step is a more explicit workflow target, not merely stronger conditioning
+
+## Workflow Deviation / Anomaly Detection
+
+- Added a new causal workflow deviation branch:
+  - benchmark definition:
+    - `outputs/deviation_detection/benchmark_definition.md`
+  - dataset / scorer:
+    - `datasets/egtea_deviation_dataset.py`
+    - `models/workflow_deviation_scorer.py`
+  - scripts:
+    - `scripts/build_deviation_benchmark.py`
+    - `scripts/score_workflow_deviation.py`
+    - `scripts/eval_workflow_deviation.py`
+    - `scripts/summarize_deviation_results.py`
+- Built a proxy benchmark from clean sessions:
+  - `normal` events use the original current action
+  - `out_of_order` proxies replace the current action with the immediate next action
+  - `unexpected_action` proxies replace the current action with a noun-compatible but low-transition-probability action
+  - benchmark files:
+    - `outputs/deviation_detection/benchmark/val_internal_proxy_benchmark.json`
+    - `outputs/deviation_detection/benchmark/test_proxy_benchmark.json`
+- Ran three deviation baselines:
+  - `transition_violation`
+  - `next_action_mismatch`
+  - `combined_workflow_score`
+- Proxy test results:
+  - transition violation:
+    - AUROC `0.6516`
+    - AUPRC `0.7667`
+    - balanced accuracy `0.6107`
+  - next-action mismatch:
+    - AUROC `0.6575`
+    - AUPRC `0.7710`
+    - balanced accuracy `0.6166`
+  - combined workflow score:
+    - AUROC `0.8683`
+    - AUPRC `0.9389`
+    - balanced accuracy `0.8201`
+- Interpretation:
+  - the combined score is clearly stronger than any single signal
+  - `unexpected_action` proxies are easier to detect than `out_of_order` proxies
+  - the branch is already strong enough to support a prototype workflow monitor
+- Generated artifacts:
+  - `outputs/deviation_detection/deviation_summary.md`
+  - `outputs/deviation_detection/deviation_summary.csv`
+  - `outputs/deviation_detection/error_analysis.md`
+  - `outputs/deviation_detection/case_studies.md`
+
+## Online Warning System
+
+- Added a presentation-ready online warning layer on top of the best deviation score:
+  - schema:
+    - `outputs/warning_system/anomaly_schema.md`
+  - annotation interface:
+    - `datasets/egtea_anomaly_annotation_schema.py`
+    - `scripts/build_anomaly_annotation_template.py`
+  - rule-based warning aggregator:
+    - `models/online_warning_system.py`
+    - `scripts/run_online_warning_demo.py`
+    - `scripts/summarize_warning_results.py`
+- Warning schema includes two layers:
+  - deviation type:
+    - `normal`
+    - `out_of_order`
+    - `unexpected_action`
+    - `missing_step_risk`
+    - `repeated_or_stalled_step`
+    - `low_confidence_ambiguous`
+  - severity:
+    - `info`
+    - `warning`
+    - `critical`
+- Built annotation-ready templates for future real anomaly labeling:
+  - `outputs/warning_system/annotation_templates/anomaly_annotation_template_full.csv`
+  - `outputs/warning_system/annotation_templates/anomaly_annotation_template_sample.csv`
+- Ran online warning demo on test split:
+  - full event stream:
+    - `outputs/warning_system/online_demo_all_test.json`
+  - normal-only stream:
+    - `outputs/warning_system/online_demo_normal_test.json`
+  - proxy-abnormal stream:
+    - `outputs/warning_system/online_demo_proxy_test.json`
+- Current warning prototype summary:
+  - normal false alarm rate:
+    - `0.0945`
+  - proxy out-of-order detection rate:
+    - `0.5861`
+  - proxy unexpected-action detection rate:
+    - `0.7584`
+- Interpretation:
+  - the system is good enough for an online warning prototype
+  - the rule-based aggregator is already usable and interpretable
+  - the next highest-value step is to attach a small real anomaly labeling pass, not to replace the rule system with a learned head immediately
+- Generated outputs:
+  - `outputs/warning_system/warning_summary.md`
+  - `outputs/warning_system/warning_summary.csv`
+  - `outputs/warning_system/case_studies.md`
+
+## 2026-03-29: augmentation ablation setup
+
+- Goal:
+  - test which clip-level train augmentation is most useful for the EgoVideo single-clip frozen-backbone baseline
+- Reused the existing training path instead of rebuilding the pipeline:
+  - `datasets/egtea_dataset.py`
+  - `scripts/train.py`
+  - `scripts/train_egovideo_singleclip.py`
+- Refactored train-time clip transform into a configurable augmentation path:
+  - supports:
+    - baseline
+    - `RandomResizedCrop`
+    - `RandomHorizontalFlip`
+    - light `ColorJitter`
+    - combinations
+  - eval path remains fixed:
+    - `Resize + CenterCrop + Normalize`
+- Added configs:
+  - `configs/augmentation_ablation/baseline.yaml`
+  - `configs/augmentation_ablation/rrc.yaml`
+  - `configs/augmentation_ablation/rrc_flip.yaml`
+  - `configs/augmentation_ablation/rrc_jitter.yaml`
+  - `configs/augmentation_ablation/rrc_flip_jitter.yaml`
+- Added scripts:
+  - `scripts/train_with_augmentation.py`
+  - `scripts/summarize_augmentation_results.py`
+- Added storage protection:
+  - `scripts/train.py` now supports disabling per-epoch snapshots via:
+    - `training.save_epoch_snapshots: false`
+  - this is important because EgoVideo checkpoints are very large
+- Smoke validation:
+  - ran small-sample smoke checks for `baseline` and `rrc_flip_jitter`
+  - confirmed the augmentation-aware training entry launches correctly with the frozen EgoVideo path
+  - full split1 ablation was not completed yet in this pass because each frozen EgoVideo run is multi-hour
+
+## 2026-03-30: demo-ready simple scripts
+
+- Goal:
+  - make the current strongest EGTEA workflow easier for teammates to reproduce with minimal command-line friction
+- Added a demo-ready chained pipeline rooted at:
+  - `outputs/demo_ready/default_pipeline/`
+- Added simple scripts:
+  - `scripts/setup_dataset.py`
+  - `scripts/setup_egovideo.py`
+  - `scripts/run_default_training.py`
+  - `scripts/predict_single_clip.py`
+  - `scripts/predict_clip_folder.py`
+  - helper: `scripts/_demo_ready_common.py`
+- Behavior:
+  - `setup_dataset.py`
+    - downloads EGTEA release archives if missing
+    - extracts them into the project-local structure used by the repo
+    - generates `train_internal_split1.txt` / `val_internal_split1.txt`
+  - `setup_egovideo.py`
+    - verifies the local EgoVideo backbone code exists
+    - downloads `ckpt_4frames.pth` if missing
+  - `run_default_training.py`
+    - runs the default strongest practical pipeline:
+      - EgoVideo frozen single-clip with `rrc_flip`
+      - candidate dump
+      - v1 single-clip state model
+      - transition priors
+      - learned transition-aware reranker
+      - soft state-prior evaluation
+    - writes a reusable bundle file for later inference
+  - `predict_single_clip.py`
+    - resolves a clip name under `data/egtea_gaze_plus/cropped_clips`
+    - prints top-5 action predictions
+  - `predict_clip_folder.py`
+    - resolves one cropped-clips session folder
+    - runs online sequential prediction with:
+      - single-clip encoder
+      - transition reranker
+      - soft state prior
+- Added teammate-facing run note:
+  - `scripts/SIMPLE_RUNS.md`
