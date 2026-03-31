@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+import cv2
 import torch
 from tqdm import tqdm
 
@@ -37,6 +38,20 @@ def sync_device(device: torch.device) -> None:
         torch.cuda.synchronize(device)
 
 
+def get_clip_duration_seconds(clip_path: Path) -> float:
+    capture = cv2.VideoCapture(str(clip_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"Failed to open video for duration lookup: {clip_path}")
+    try:
+        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        frames = float(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)
+    finally:
+        capture.release()
+    if fps <= 0:
+        return 0.0
+    return frames / fps
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run sequential action prediction over one cropped_clips session folder.")
     parser.add_argument("folder", type=str, help="Session folder path or folder name under data/egtea_gaze_plus/cropped_clips")
@@ -65,13 +80,19 @@ def main() -> int:
         sync_device(device)
         total_start_time = time.perf_counter()
         rows = []
-        for clip_path in tqdm(clip_paths, desc="Predicting clips", unit="clip"):
+        for clip_index, clip_path in enumerate(tqdm(clip_paths, desc="Predicting clips", unit="clip")):
+            clip_duration_sec = get_clip_duration_seconds(clip_path)
             sync_device(device)
             clip_start_time = time.perf_counter()
             clip_rows = rerank_sequence_predictions_from_loaded(clip_paths=[clip_path], device=device, runtime=runtime)
             sync_device(device)
             elapsed_ms = (time.perf_counter() - clip_start_time) * 1000.0
             row = clip_rows[0]
+            row["clip_idx"] = clip_index
+            row["clip"] = clip_path.name
+            row["clip_path"] = str(clip_path)
+            row["clip_duration_sec"] = round(clip_duration_sec, 3)
+            row["clip_duration_ms"] = round(clip_duration_sec * 1000.0, 3)
             row["elapsed_ms"] = round(elapsed_ms, 3)
             row["stream_elapsed_ms"] = round(elapsed_ms, 3)
             rows.append(row)
@@ -88,7 +109,8 @@ def main() -> int:
         stream_total_start_time = time.perf_counter()
         rows = []
         stream_total_elapsed_ms = 0.0
-        for clip_path in tqdm(clip_paths, desc="Predicting clips", unit="clip"):
+        for clip_index, clip_path in enumerate(tqdm(clip_paths, desc="Predicting clips", unit="clip")):
+            clip_duration_sec = get_clip_duration_seconds(clip_path)
             sampled_frames = load_sampled_frames(clip_path, raw_config)
             sync_device(device)
             clip_start_time = time.perf_counter()
@@ -115,7 +137,11 @@ def main() -> int:
             pred_id = int(top5_ids[0].item())
             rows.append(
                 {
+                    "clip_idx": clip_index,
                     "clip": clip_path.name,
+                    "clip_path": str(clip_path),
+                    "clip_duration_sec": round(clip_duration_sec, 3),
+                    "clip_duration_ms": round(clip_duration_sec * 1000.0, 3),
                     "pred_action_id": pred_id,
                     "pred_action_label": action_names[pred_id],
                     "pred_state_name": "raw_only",
@@ -143,6 +169,8 @@ def main() -> int:
         "session_folder": str(folder_path),
         "num_clips": len(rows),
         "mode": mode,
+        "total_clip_duration_sec": round(sum(float(row["clip_duration_sec"]) for row in rows), 3),
+        "total_clip_duration_ms": round(sum(float(row["clip_duration_ms"]) for row in rows), 3),
         "total_elapsed_ms": round(total_elapsed_ms, 3),
         "avg_elapsed_ms": round(avg_elapsed_ms, 3),
         "stream_total_elapsed_ms": round(stream_total_elapsed_ms, 3),
@@ -159,6 +187,7 @@ def main() -> int:
 
     print(f"session: {folder_path.name}")
     print(f"clips: {len(rows)}")
+    print(f"clip_duration_total: {payload['total_clip_duration_sec']:.3f} s")
     print(f"time_total: {total_elapsed_ms:.3f} ms")
     print(f"time_avg_per_clip: {avg_elapsed_ms:.3f} ms")
     print(f"time_stream_total: {stream_total_elapsed_ms:.3f} ms")
@@ -167,6 +196,7 @@ def main() -> int:
         for row in rows:
             print(
                 f"{row['clip']}: {row['pred_action_label']} [{row['pred_state_name']}] "
+                f"[{row['clip_duration_sec']:.3f}s] "
                 f"(full {row['elapsed_ms']:.3f} ms | stream {row['stream_elapsed_ms']:.3f} ms)"
             )
         return 0
@@ -174,6 +204,7 @@ def main() -> int:
     for row in rows:
         print(
             f"{row['clip']}: {row['pred_action_label']} [{row['pred_state_name']}] "
+            f"[{row['clip_duration_sec']:.3f}s] "
             f"(full {row['elapsed_ms']:.3f} ms | stream {row['stream_elapsed_ms']:.3f} ms)"
         )
         for top in row["top5"]:

@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Predict top-5 actions for one EGTEA clip.")
     parser.add_argument("clip", type=str, help="Clip filename or path under data/egtea_gaze_plus/cropped_clips")
     parser.add_argument("--bundle", type=Path, default=BUNDLE_PATH)
+    parser.add_argument("--output-json", type=Path, default=None)
     parser.add_argument("--json", action="store_true", help="Print full JSON instead of the compact 5-line format.")
     return parser.parse_args()
 
@@ -112,17 +113,22 @@ def main() -> int:
         }
         for rank in range(5)
     ]
+    payload = {
+        "clip": clip_path.name,
+        "resolved_path": str(clip_path),
+        "mode": mode,
+        "elapsed_ms": round(elapsed_ms, 3),
+        "stream_elapsed_ms": round(stream_elapsed_ms, 3),
+        "top5": rows,
+    }
+    if args.output_json is not None:
+        import json
+
+        args.output_json.parent.mkdir(parents=True, exist_ok=True)
+        args.output_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     if args.json:
         import json
 
-        payload = {
-            "clip": clip_path.name,
-            "resolved_path": str(clip_path),
-            "mode": mode,
-            "elapsed_ms": round(elapsed_ms, 3),
-            "stream_elapsed_ms": round(stream_elapsed_ms, 3),
-            "top5": rows,
-        }
         print(json.dumps(payload, indent=2))
         return 0
     for row in rows:
